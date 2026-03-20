@@ -13,9 +13,7 @@ API_ID = int(os.getenv("API_ID", 0))
 API_HASH = os.getenv("API_HASH")
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
-# Yahan Render mein apne PURANE REPO ka naam dalna (e.g. 'username/old-repo')
 REPO_NAME = os.getenv("REPO_NAME") 
-TARGET_BOT_ID = 8292700848
 TARGET_BOT_USR = "@Khushi_jwt_bot"
 
 FILES_TO_PUSH = ["token_ind.json", "token_ind_visit.json"]
@@ -29,13 +27,12 @@ app = Flask('')
 def home(): return "Bot is Online"
 def run_web(): app.run(host='0.0.0.0', port=os.getenv("PORT", 8080))
 
-# --- [ LOGIC FUNCTIONS ] ---
+# --- [ FUNCTIONS ] ---
 def get_last_update():
     if os.path.exists(DATA_FILE):
         try:
             with open(DATA_FILE, 'r') as f:
-                data = json.load(f)
-                return datetime.fromisoformat(data['time'])
+                return datetime.fromisoformat(json.load(f)['time'])
         except: pass
     return datetime.min
 
@@ -45,100 +42,63 @@ def save_last_update():
 
 def update_github(file_path, content):
     url = f"https://api.github.com/repos/{REPO_NAME}/contents/{file_path}"
-    headers = {
-        "Authorization": f"token {GITHUB_TOKEN}",
-        "Accept": "application/vnd.github.v3+json"
-    }
-    # Pehle SHA nikalna padta hai update ke liye
+    headers = {"Authorization": f"token {GITHUB_TOKEN}", "Accept": "application/vnd.github.v3+json"}
     r = requests.get(url, headers=headers)
     sha = r.json().get('sha') if r.status_code == 200 else None
-    
     content_b64 = base64.b64encode(content.encode()).decode()
-    data = {
-        "message": f"Auto-Update {file_path} via Bot",
-        "content": content_b64,
-        "branch": "main"
-    }
+    data = {"message": f"Auto-Update: {file_path}", "content": content_b64, "branch": "main"}
     if sha: data["sha"] = sha
-    
     res = requests.put(url, headers=headers, json=data)
     return res.status_code
 
 # --- [ BOT COMMANDS ] ---
-client = TelegramClient('update2_session', API_ID, API_HASH).start(bot_token=BOT_TOKEN)
+client = TelegramClient('update2_session', API_ID, API_HASH)
 
 @client.on(events.NewMessage(pattern='/update2'))
 async def handle_update(event):
     global is_processing
-    
-    # 1. Anti-Spam Check
-    if is_processing:
-        return await event.reply("⚠️ Ek process abhi chal raha hai, thoda sabar karein!")
+    if is_processing: return await event.reply("⚠️ Wait, ek process chal raha hai!")
 
-    # 2. Cooldown Check (4 Hours)
     last_time = get_last_update()
-    diff = datetime.now() - last_time
-    if diff < timedelta(hours=COOLDOWN_HOURS):
-        remaining = timedelta(hours=COOLDOWN_HOURS) - diff
-        hours, remainder = divmod(remaining.seconds, 3600)
-        minutes, _ = divmod(remainder, 60)
-        return await event.reply(f"⏳ **Limit Active!** Agla update {hours}h {minutes}m baad kar payenge.")
+    if datetime.now() - last_time < timedelta(hours=COOLDOWN_HOURS):
+        return await event.reply("⏳ 4 ghante ka cooldown active hai!")
 
     is_processing = True
-    status_msg = await event.reply("⚙️ Kaam shuru... Target bot se contact kar raha hoon.")
+    status = await event.reply("⚙️ Shuru kar raha hoon...")
 
     try:
-        # 3. Chat with @Khushi_jwt_bot
         async with client.conversation(TARGET_BOT_USR) as conv:
-            await status_msg.edit("📤 `id.json` bhej raha hoon...")
             await conv.send_file("id.json")
-            
-            await status_msg.edit("⏳ 3 files ka intezar hai (Filtering)...")
-            
             found_file = None
-            # Loop to check incoming messages for the specific file
-            for _ in range(10): 
+            for _ in range(10):
                 resp = await conv.get_response(timeout=60)
-                if resp.media and hasattr(resp.media, 'document'):
-                    # Check file name in attributes
+                if resp.media:
                     file_name = next((attr.file_name for attr in resp.media.document.attributes if hasattr(attr, 'file_name')), "")
                     if file_name == "jwt_token.json":
                         found_file = await client.download_media(resp.media)
                         break
             
-            if not found_file:
-                raise Exception("Teesre bot ne `jwt_token.json` nahi bheji (Timeout).")
+            if not found_file: raise Exception("jwt_token.json nahi mila!")
 
-            # 4. Read Downloaded File
-            with open(found_file, 'r') as f:
-                new_data = f.read()
+            with open(found_file, 'r') as f: new_content = f.read()
+            for f_name in FILES_TO_PUSH: update_github(f_name, new_content)
 
-            await status_msg.edit(f"🔗 Purane repo ({REPO_NAME}) mein upload ho raha hai...")
-            
-            # 5. Push to Old Repo
-            success = True
-            for f_name in FILES_TO_PUSH:
-                code = update_github(f_name, new_data)
-                if code not in [200, 201]:
-                    success = False
-                    break
-            
-            if success:
-                save_last_update()
-                await status_msg.edit(f"✅ **Success!** Purane repo ki dono files update ho gayi hain. Ab 4 ghante ka break!")
-            else:
-                await status_msg.edit("❌ GitHub Update Fail ho gaya! Token ya Repo Name check karein.")
-
-            # Cleanup
+            save_last_update()
+            await status.edit(f"✅ Success! Purane repo ({REPO_NAME}) ki files update ho gayi.")
             if os.path.exists(found_file): os.remove(found_file)
-
     except Exception as e:
-        await status_msg.edit(f"❌ **Error:** {str(e)}")
-    
+        await status.edit(f"❌ Error: {str(e)}")
     finally:
         is_processing = False
 
+# --- [ MAIN RUNNER ] ---
+async def start_bot():
+    await client.start(bot_token=BOT_TOKEN)
+    print("🚀 Bot is LIVE...")
+    await client.run_until_disconnected()
+
 if __name__ == "__main__":
     Thread(target=run_web).start()
-    print("🚀 Bot is LIVE for Group Users...")
-    client.run_until_disconnected()
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    loop.run_until_complete(start_bot())
