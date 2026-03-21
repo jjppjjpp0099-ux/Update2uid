@@ -9,13 +9,13 @@ from threading import Thread
 from flask import Flask
 
 # --- [ CREDENTIALS ] ---
+# Inhe Render ke Environment Variables mein set karein
 API_ID = int(os.getenv("API_ID", 0))
 API_HASH = os.getenv("API_HASH")
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
-# Jis repo mein token update karna hai
 REPO_NAME = "jjppjjpp0099-ux/Like-api-2" 
 
-# Render Notification ke liye (Settings mein add karein)
+# Render API details (Account 1 se nikali hui)
 RENDER_API_KEY = os.getenv("RENDER_API_KEY")
 RENDER_SERVICE_ID = os.getenv("RENDER_SERVICE_ID")
 
@@ -28,10 +28,10 @@ is_processing = False
 # --- [ KEEP ALIVE SERVER ] ---
 app = Flask('')
 @app.route('/')
-def home(): return "Userbot is Active & Online"
+def home(): return "Userbot is Live & Monitoring"
 def run_web(): app.run(host='0.0.0.0', port=os.getenv("PORT", 8080))
 
-# --- [ HELPER FUNCTIONS ] ---
+# --- [ FUNCTIONS ] ---
 def get_last_update():
     if os.path.exists(DATA_FILE):
         try:
@@ -54,43 +54,45 @@ def update_github(file_path, content):
 
 async def wait_for_render_live(event):
     if not RENDER_API_KEY or not RENDER_SERVICE_ID:
-        return await event.respond("✅ GitHub files update ho gayi hain! (Render notification setup nahi hai)")
+        return await event.respond("✅ GitHub updated! (Render API details missing hain).")
 
     headers = {"Authorization": f"Bearer {RENDER_API_KEY}", "Accept": "application/json"}
-    status_msg = await event.respond("🚀 GitHub Updated! Ab Render deploy check kar raha hoon... (Wait 1-2 mins)")
+    status_msg = await event.respond("🚀 GitHub Updated! Ab Render deploy check ho raha hai... (Wait 1-2 mins)")
 
-    # Render deployment status check karne ka loop
-    for i in range(25): # 25 attempts * 15 seconds = ~6 minutes max
+    for i in range(30): # ~7 minutes max wait
         await asyncio.sleep(15)
         try:
+            # Render API se deploys ki list nikalna
             r = requests.get(f"https://api.render.com/v1/services/{RENDER_SERVICE_ID}/deploys", headers=headers)
             if r.status_code == 200:
+                # Sabse naya deploy check karein
                 latest_deploy = r.json()[0]['deploy']
                 status = latest_deploy.get('status')
                 
                 if status == "live":
-                    return await status_msg.edit("✅ **Render Update Successfully!** 🔥\nNaya token ab Like Bot mein active ho gaya hai.")
+                    return await status_msg.edit("✅ **Render Update Successfully!** 🔥\nAb aapka Like Bot naye token ke saath taiyar hai.")
                 elif status in ["build_failed", "canceled"]:
                     return await status_msg.edit(f"❌ Render deploy fail ho gaya: `{status}`")
         except Exception as e:
-            print(f"Render API Error: {e}")
+            print(f"Polling error: {e}")
             
-    await status_msg.edit("⌛ Render deploy abhi bhi chal raha hai. Ek baar dashboard check kar lijiye!")
+    await status_msg.edit("⌛ Deploy abhi bhi progress mein hai. Ek baar dashboard check karein.")
 
-# --- [ MAIN BOT LOGIC ] ---
+# --- [ TELETHON CLIENT ] ---
 client = TelegramClient('update2_session', API_ID, API_HASH)
 
 @client.on(events.NewMessage(pattern='/update2', outgoing=True))
 async def handle_update(event):
     global is_processing
-    if is_processing: return await event.respond("⚠️ Ek process pehle se chal raha hai!")
-
+    if is_processing: return
+    
+    # Cooldown Check
     last_time = get_last_update()
     if datetime.now() - last_time < timedelta(hours=COOLDOWN_HOURS):
-        return await event.respond("⏳ Cooldown active hai (4 Hours). Please wait.")
+        return await event.respond("⏳ Cooldown active hai (4 Ghante).")
 
     is_processing = True
-    status = await event.respond("⚙️ Khushi Bot se files nikal raha hoon...")
+    status = await event.respond("⚙️ Process shuru... Khushi Bot se file le raha hoon.")
 
     try:
         async with client.conversation(TARGET_BOT_USR) as conv:
@@ -102,18 +104,18 @@ async def handle_update(event):
                     found_file = await client.download_media(resp.media)
                     break
             
-            if not found_file: raise Exception("Khushi Bot ne file reply nahi ki!")
+            if not found_file: raise Exception("Khushi Bot ne file nahi bheji!")
 
             with open(found_file, 'r') as f: new_content = f.read()
             
-            # GitHub par dono files update karein
+            # GitHub Update
             for f_name in FILES_TO_PUSH: 
                 update_github(f_name, new_content)
             
             save_last_update()
             await status.delete()
             
-            # Render deploy ka wait aur notification
+            # Render Status Check
             await wait_for_render_live(event)
 
     except Exception as e:
@@ -125,13 +127,13 @@ async def handle_update(event):
 
 async def main():
     await client.start()
-    print("🚀 Protected Userbot is LIVE on Render...")
+    print("🚀 Userbot LIVE (No Bot Token Mode)")
     await client.run_until_disconnected()
 
 if __name__ == "__main__":
-    # Flask ko separate thread mein chalayein
+    # Flask for Keep-Alive
     Thread(target=run_web).start()
-    # Kal wala loop error fix karne ke liye modern asyncio method
+    # Modern Asyncio Loop
     try:
         asyncio.run(main())
     except (KeyboardInterrupt, SystemExit):
