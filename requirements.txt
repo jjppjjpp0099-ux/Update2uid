@@ -1,1 +1,4 @@
-telethon, flask, requests, python-dateutil
+telethon
+flask
+requests
+python-dateutil
