@@ -1,140 +1,130 @@
-import os
-import json
-import base64
-import asyncio
-import requests
+import os, json, base64, asyncio, requests, time
 from datetime import datetime, timedelta
 from telethon import TelegramClient, events
+from telethon.sessions import StringSession
 from threading import Thread
 from flask import Flask
 
-# --- [ CREDENTIALS ] ---
-# Inhe Render ke Environment Variables mein set karein
+# --- [ CONFIGURATION ] ---
 API_ID = int(os.getenv("API_ID", 0))
 API_HASH = os.getenv("API_HASH")
+SESSION_STRING = os.getenv("SESSION_STRING")
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
-REPO_NAME = "jjppjjpp0099-ux/Like-api-2" 
+REPO_NAME = os.getenv("REPO_NAME") # External Repo
+GROUP_ID = int(os.getenv("GROUP_ID", 0))
+RENDER_API_KEY = os.getenv("RENDER_API_KEY") # External Render API
+SERVICE_ID = os.getenv("SERVICE_ID") # External Service ID
+TARGET_BOT = "@Khushi_jwt_bot"
 
-# Render API details (Account 1 se nikali hui)
-RENDER_API_KEY = os.getenv("RENDER_API_KEY")
-RENDER_SERVICE_ID = os.getenv("RENDER_SERVICE_ID")
+LAST_UPDATE_TIME = datetime.min
+IS_PROCESSING = False
 
-TARGET_BOT_USR = "@Khushi_jwt_bot"
-FILES_TO_PUSH = ["token_ind.json", "token_ind_visit.json"]
-COOLDOWN_HOURS = 4
-DATA_FILE = "last_update.json"
-is_processing = False
-
-# --- [ KEEP ALIVE SERVER ] ---
+# --- [ KEEP ALIVE SYSTEM (Anti-Sleep) ] ---
 app = Flask('')
 @app.route('/')
-def home(): return "Userbot is Live & Monitoring"
-def run_web(): app.run(host='0.0.0.0', port=os.getenv("PORT", 8080))
+def home(): return "Manager Bot is Awake ⚡"
 
-# --- [ FUNCTIONS ] ---
-def get_last_update():
-    if os.path.exists(DATA_FILE):
-        try:
-            with open(DATA_FILE, 'r') as f: return datetime.fromisoformat(json.load(f)['time'])
-        except: pass
-    return datetime.min
+def run_web():
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host='0.0.0.0', port=port)
 
-def save_last_update():
-    with open(DATA_FILE, 'w') as f: json.dump({'time': datetime.now().isoformat()}, f)
-
-def update_github(file_path, content):
+# --- [ GITHUB HELPERS ] ---
+def get_github_content(file_path):
     url = f"https://api.github.com/repos/{REPO_NAME}/contents/{file_path}"
-    headers = {"Authorization": f"token {GITHUB_TOKEN}", "Accept": "application/vnd.github.v3+json"}
+    headers = {"Authorization": f"token {GITHUB_TOKEN}"}
     r = requests.get(url, headers=headers)
-    sha = r.json().get('sha') if r.status_code == 200 else None
-    content_b64 = base64.b64encode(content.encode()).decode()
-    data = {"message": f"Auto-Update: {file_path}", "content": content_b64, "branch": "main"}
-    if sha: data["sha"] = sha
+    if r.status_code == 200:
+        content = base64.b64decode(r.json()['content']).decode()
+        return content, r.json().get('sha')
+    return None, None
+
+def update_github(file_path, content, sha=None):
+    url = f"https://api.github.com/repos/{REPO_NAME}/contents/{file_path}"
+    headers = {"Authorization": f"token {GITHUB_TOKEN}"}
+    data = {"message": "Auto-Update: Tokens", "content": base64.b64encode(content.encode()).decode(), "sha": sha}
     return requests.put(url, headers=headers, json=data).status_code
 
-async def wait_for_render_live(event):
-    if not RENDER_API_KEY or not RENDER_SERVICE_ID:
-        return await event.respond("✅ GitHub updated! (Render API details missing hain).")
-
+# --- [ RENDER TRACKER ] ---
+async def wait_for_render_deploy():
+    url = f"https://api.render.com/v1/services/{SERVICE_ID}/deploys"
     headers = {"Authorization": f"Bearer {RENDER_API_KEY}", "Accept": "application/json"}
-    status_msg = await event.respond("🚀 GitHub Updated! Ab Render deploy check ho raha hai... (Wait 1-2 mins)")
-
-    for i in range(30): # ~7 minutes max wait
-        await asyncio.sleep(15)
-        try:
-            # Render API se deploys ki list nikalna
-            r = requests.get(f"https://api.render.com/v1/services/{RENDER_SERVICE_ID}/deploys", headers=headers)
-            if r.status_code == 200:
-                # Sabse naya deploy check karein
-                latest_deploy = r.json()[0]['deploy']
-                status = latest_deploy.get('status')
-                
-                if status == "live":
-                    return await status_msg.edit("✅ **Render Update Successfully!** 🔥\nAb aapka Like Bot naye token ke saath taiyar hai.")
-                elif status in ["build_failed", "canceled"]:
-                    return await status_msg.edit(f"❌ Render deploy fail ho gaya: `{status}`")
-        except Exception as e:
-            print(f"Polling error: {e}")
-            
-    await status_msg.edit("⌛ Deploy abhi bhi progress mein hai. Ek baar dashboard check karein.")
-
-# --- [ TELETHON CLIENT ] ---
-client = TelegramClient('update2_session', API_ID, API_HASH)
-
-@client.on(events.NewMessage(pattern='/update2', outgoing=True))
-async def handle_update(event):
-    global is_processing
-    if is_processing: return
     
-    # Cooldown Check
-    last_time = get_last_update()
-    if datetime.now() - last_time < timedelta(hours=COOLDOWN_HOURS):
-        return await event.respond("⏳ Cooldown active hai (4 Ghante).")
+    while True:
+        try:
+            r = requests.get(url, headers=headers)
+            if r.status_code == 200:
+                latest_deploy = r.json()[0]
+                status = latest_deploy['deploy']['status']
+                if status == "live":
+                    return True
+                elif status in ["build_failed", "canceled"]:
+                    return False
+        except: pass
+        await asyncio.sleep(30) # 30 sec baad check karega
 
-    is_processing = True
-    status = await event.respond("⚙️ Process shuru... Khushi Bot se file le raha hoon.")
-
+# --- [ JWT LOGIC ] ---
+def decode_jwt_exp(token):
     try:
-        async with client.conversation(TARGET_BOT_USR) as conv:
-            await conv.send_file("id.json")
-            found_file = None
-            for _ in range(10): 
-                resp = await conv.get_response()
-                if resp.media:
-                    found_file = await client.download_media(resp.media)
-                    break
-            
-            if not found_file: raise Exception("Khushi Bot ne file nahi bheji!")
+        payload = json.loads(base64.b64decode(token.split('.')[1] + '==').decode())
+        return payload.get('exp', 0)
+    except: return 0
 
-            with open(found_file, 'r') as f: new_content = f.read()
-            
-            # GitHub Update
-            for f_name in FILES_TO_PUSH: 
-                update_github(f_name, new_content)
-            
-            save_last_update()
-            await status.delete()
-            
-            # Render Status Check
-            await wait_for_render_live(event)
-
-    except Exception as e:
-        await event.respond(f"❌ Error: {str(e)}")
-    finally:
-        is_processing = False
-        if 'found_file' in locals() and found_file and os.path.exists(found_file): 
-            os.remove(found_file)
-
-async def main():
-    await client.start()
-    print("🚀 Userbot LIVE (No Bot Token Mode)")
-    await client.run_until_disconnected()
-
-if __name__ == "__main__":
-    # Flask for Keep-Alive
-    Thread(target=run_web).start()
-    # Modern Asyncio Loop
+def analyze_tokens(content):
     try:
-        asyncio.run(main())
-    except (KeyboardInterrupt, SystemExit):
-        pass
+        data = json.loads(content)
+        tokens = data if isinstance(data, list) else [data]
+        now = int(time.time())
+        active_count = 0
+        exp_times = []
+        for item in tokens:
+            t = item.get("token")
+            if t:
+                expiry = decode_jwt_exp(t)
+                if expiry > now:
+                    active_count += 1
+                    exp_times.append(expiry)
+        next_expiry = min(exp_times) if exp_times else 0
+        return active_count, len(tokens), next_expiry
+    except: return 0, 0, 0
+
+# --- [ CLIENT SETUP ] ---
+client = TelegramClient(StringSession(SESSION_STRING), API_ID, API_HASH)
+
+@client.on(events.NewMessage(pattern='/expire', chats=GROUP_ID))
+async def expire_report(event):
+    content, _ = get_github_content("token_ind.json")
+    if not content: return await event.reply("❌ Error: Repo not found!")
+    
+    active, total, next_exp = analyze_tokens(content)
+    msg = f"**📊 Token Status (External Repo)**\n"
+    msg += f"━━━━━━━━━━━━━━━━━━\n"
+    msg += f"✅ **Active:** `{active}/{total}`\n"
+    if next_exp > 0:
+        time_left = next_exp - int(time.time())
+        hrs, mins = divmod(time_left // 60, 60)
+        msg += f"⏳ **Next Expiry In:** `{int(hrs)}h {int(mins)}m`\n"
+    await event.reply(msg)
+
+async def auto_updater():
+    global LAST_UPDATE_TIME, IS_PROCESSING
+    while True:
+        try:
+            content, sha = get_github_content("token_ind.json")
+            if content:
+                active, total, next_exp = analyze_tokens(content)
+                now = int(time.time())
+                
+                should_update = False
+                if next_exp > 0 and (next_exp - now) < 600: # T-10 Mins
+                    should_update = True
+                elif active < total: # Sudden Expiry
+                    if datetime.now() - LAST_UPDATE_TIME > timedelta(hours=2):
+                        should_update = True
+                
+                if should_update and not IS_PROCESSING:
+                    IS_PROCESSING = True
+                    async with client.conversation(TARGET_BOT) as conv:
+                        await conv.send_file("id.json")
+                        found_file = None
+                        for _ in range(5):
+                            resp = await conv.get_response
