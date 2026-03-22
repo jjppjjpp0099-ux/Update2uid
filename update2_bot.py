@@ -77,4 +77,96 @@ def decode_jwt_exp(token):
 def analyze_tokens(content):
     try:
         data = json.loads(content)
-        tokens = data if isinstance(data
+        tokens = data if isinstance(data, list) else [data]
+        now = int(time.time())
+        active_count = 0
+        exp_times = []
+        for item in tokens:
+            t = item.get("token")
+            if t:
+                expiry = decode_jwt_exp(t)
+                if expiry > now:
+                    active_count += 1
+                    exp_times.append(expiry)
+        next_expiry = min(exp_times) if exp_times else 0
+        return active_count, len(tokens), next_expiry
+    except: return 0, 0, 0
+
+# --- [ CLIENT SETUP ] ---
+client = TelegramClient(StringSession(SESSION_STRING), API_ID, API_HASH)
+
+@client.on(events.NewMessage(pattern='/expire', chats=GROUP_ID))
+async def expire_report(event):
+    content, _ = get_github_content("token_ind.json")
+    if not content: return await event.reply("❌ Error: External Repo file not found!")
+    
+    active, total, next_exp = analyze_tokens(content)
+    msg = f"**📊 Token Status (External Repo)**\n"
+    msg += f"━━━━━━━━━━━━━━━━━━\n"
+    msg += f"✅ **Active:** `{active}/{total}`\n"
+    if next_exp > 0:
+        time_left = next_exp - int(time.time())
+        hrs, mins = divmod(time_left // 60, 60)
+        msg += f"⏳ **Next Expiry In:** `{int(hrs)}h {int(mins)}m`\n"
+    await event.reply(msg)
+
+async def auto_updater():
+    global LAST_UPDATE_TIME, IS_PROCESSING
+    while True:
+        try:
+            content, sha = get_github_content("token_ind.json")
+            if content:
+                active, total, next_exp = analyze_tokens(content)
+                now = int(time.time())
+                
+                should_update = False
+                # T-10 Trigger
+                if next_exp > 0 and (next_exp - now) < 600:
+                    should_update = True
+                # Emergency Trigger (2-hour safety gap)
+                elif active < total:
+                    if datetime.now() - LAST_UPDATE_TIME > timedelta(hours=2):
+                        should_update = True
+                
+                if should_update and not IS_PROCESSING:
+                    IS_PROCESSING = True
+                    async with client.conversation(TARGET_BOT) as conv:
+                        await conv.send_file("id.json")
+                        found_file = None
+                        for _ in range(5):
+                            resp = await conv.get_response()
+                            if resp.media:
+                                found_file = await client.download_media(resp.media)
+                                break
+                        
+                        if found_file:
+                            with open(found_file, 'r') as f: new_data = f.read()
+                            # Push updates to external repo files
+                            for f_name in ["token_ind.json", "token_ind_visit.json"]:
+                                _, c_sha = get_github_content(f_name)
+                                update_github(f_name, new_data, c_sha)
+                            
+                            LAST_UPDATE_TIME = datetime.now()
+                            await client.send_message(GROUP_ID, "✅ **Automatic update successfully!**\nWaiting for deployment...")
+                            
+                            # Track External Render Deploy
+                            success = await wait_for_render_deploy()
+                            if success:
+                                await client.send_message(GROUP_ID, "BOT IS LIVE ✅")
+                            os.remove(found_file)
+                    IS_PROCESSING = False
+        except Exception as e:
+            print(f"Error in updater: {e}")
+            IS_PROCESSING = False
+        await asyncio.sleep(600) # 10 minute check
+
+async def main():
+    await client.start()
+    # Silent Startup: No message sent here.
+    asyncio.create_task(auto_updater())
+    await client.run_until_disconnected()
+
+if __name__ == "__main__":
+    Thread(target=run_web, daemon=True).start()
+    loop = asyncio.get_event_loop()
+    loop.run_until_complete(main())
