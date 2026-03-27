@@ -16,8 +16,9 @@ RENDER_API_KEY = os.getenv("RENDER_API_KEY")
 SERVICE_ID = os.getenv("SERVICE_ID")
 TARGET_BOT = "@Khushi_jwt_bot"
 
-# ट्रैक रखने के लिए वेरिएबल्स
-LAST_UPDATE_TIME = datetime.min 
+# --- [ FIX 1: INITIALIZE WITH NOW ] ---
+# Isse deploy hote hi turant update nahi hoga. 2 ghante baad hi pehla check hoga.
+LAST_UPDATE_TIME = datetime.now() 
 IS_PROCESSING = False
 
 app = Flask(__name__)
@@ -28,10 +29,11 @@ app = Flask(__name__)
 def home():
     return "Manager Bot is Awake ⚡", 200
 
-# Cron-job.org के लिए URL: https://your-app.onrender.com/keep_alive
 @app.route('/keep_alive')
 def keep_alive():
-    return "Status: Monitoring with 2h Strict Guard...", 200
+    # Last update kab hua tha, ye browser pe dikhega debug ke liye
+    last_t = LAST_UPDATE_TIME.strftime("%H:%M:%S")
+    return f"Status: Monitoring... Last Update: {last_t} (2h Strict Guard Active)", 200
 
 def run_web():
     port = int(os.environ.get("PORT", 10000))
@@ -86,7 +88,10 @@ def analyze_tokens(content):
                 if expiry > now:
                     active_count += 1
                     exp_times.append(expiry)
-        return active_count, len(tokens), (min(exp_times) if exp_times else 0)
+                else:
+                    # Expired tokens ko track karne ke liye 
+                    exp_times.append(0) 
+        return active_count, len(tokens), (min([x for x in exp_times if x > 0]) if any(x > 0 for x in exp_times) else 0)
     except: return 0, 0, 0
 
 # --- [ TELEGRAM CLIENT ] ---
@@ -100,22 +105,31 @@ async def expire_report(event):
     active, total, next_exp = analyze_tokens(content)
     msg = f"📊 **Token Status**\n━━━━━━━━━━\n✅ Active: `{active}/{total}`"
     if next_exp > 0:
-        msg += f"\n⏳ Next Expiry in: `{int((next_exp-time.time())//60)}m`"
+        wait_m = int((next_exp-time.time())//60)
+        msg += f"\n⏳ Next Expiry in: `{wait_m}m`"
     await event.reply(msg)
 
 async def auto_updater():
     global IS_PROCESSING, LAST_UPDATE_TIME
     while True:
         try:
-            # शर्त 1: चेक करें कि क्या पिछले अपडेट को 2 घंटे बीत चुके हैं
-            if datetime.now() - LAST_UPDATE_TIME > timedelta(hours=2):
+            # --- [ FIX 2: STRICT LOGIC CHECK ] ---
+            current_time = datetime.now()
+            time_passed = current_time - LAST_UPDATE_TIME
+            
+            # Sirf tab aage badho jab 2 ghante (7200 sec) ho chuke hon
+            if time_passed >= timedelta(hours=2):
                 
                 content, sha = get_github_content("token_ind.json")
                 if content:
                     active, total, next_exp = analyze_tokens(content)
+                    now_ts = time.time()
                     
-                    # शर्त 2: 2 घंटे बीतने के बाद, तभी अपडेट करें जब टोकन कम हों या 10m में खत्म होने वाले हों
-                    if (active < total) or (next_exp > 0 and (next_exp - time.time()) < 600):
+                    # Condition: Ya to koi token mar chuka ho (active < total)
+                    # Ya koi agle 10 min (600s) me marne wala ho
+                    is_expiring_soon = (next_exp > 0 and (next_exp - now_ts) < 600)
+                    
+                    if (active < total) or is_expiring_soon:
                         if not IS_PROCESSING:
                             IS_PROCESSING = True
                             async with client.conversation(TARGET_BOT) as conv:
@@ -129,24 +143,31 @@ async def auto_updater():
                                 
                                 if found_file:
                                     with open(found_file, 'r') as f: new_data = f.read()
+                                    # Update both files
                                     for f_n in ["token_ind.json", "token_ind_visit.json"]:
                                         _, c_sha = get_github_content(f_n)
                                         update_github(f_n, new_data, c_sha)
                                     
                                     LAST_UPDATE_TIME = datetime.now()
-                                    await client.send_message(GROUP_ID, "✅ **Auto-Update Done!** (2h gap maintained & expiry reached)")
+                                    await client.send_message(GROUP_ID, "✅ **Auto-Update Done!**\nLogic: Expiry reached & 2h gap maintained.")
                                     
                                     if await wait_for_render_deploy():
-                                        await client.send_message(GROUP_ID, "BOT IS LIVE ✅")
+                                        await client.send_message(GROUP_ID, "🚀 **BOT REDEPLOYED & LIVE**")
                                     
                                     if os.path.exists(found_file):
                                         os.remove(found_file)
                             IS_PROCESSING = False
-            
+                    else:
+                        print(f"Update Skipped: Tokens are healthy. Next check in 10 mins.")
+            else:
+                remaining = timedelta(hours=2) - time_passed
+                print(f"Guard Active: Waiting {str(remaining).split('.')[0]} more.")
+
         except Exception as e:
             print(f"Error: {e}")
             IS_PROCESSING = False
         
+        # Har 10 minute me check karega ki kya 2 ghante poore hue?
         await asyncio.sleep(600)
 
 async def start_bot_and_loop():
@@ -157,11 +178,7 @@ async def start_bot_and_loop():
 # --- [ GUNICORN & RUN LOGIC ] ---
 
 if __name__ == "__main__":
-    # Local run (बिना Gunicorn के)
     Thread(target=run_web, daemon=True).start()
     asyncio.run(start_bot_and_loop())
 else:
-    # Production run (Gunicorn के साथ)
-    # यह थ्रेड बॉट को बैकग्राउंड में शुरू कर देगा
     Thread(target=lambda: asyncio.run(start_bot_and_loop()), daemon=True).start()
-
