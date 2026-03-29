@@ -17,7 +17,6 @@ SERVICE_ID = os.getenv("SERVICE_ID")
 TARGET_BOT = "@Khushi_jwt_bot"
 
 # --- [ INITIALIZATION ] ---
-# Isse deploy hote hi agar tokens 0 milte hain, toh turant update ho sakega.
 LAST_UPDATE_TIME = datetime.now() - timedelta(hours=2) 
 IS_PROCESSING = False
 
@@ -62,7 +61,7 @@ def update_github(file_path, content, sha=None):
 async def wait_for_render_deploy():
     url = f"https://api.render.com/v1/services/{SERVICE_ID}/deploys"
     headers = {"Authorization": f"Bearer {RENDER_API_KEY}", "Accept": "application/json"}
-    for _ in range(20): # Max 10 mins wait
+    for _ in range(20):
         try:
             r = requests.get(url, headers=headers)
             if r.status_code == 200:
@@ -106,10 +105,10 @@ async def expire_report(event):
     content, _ = get_github_content("token_ind.json")
     if not content: return await event.reply("❌ Error: Repo file not found!")
     active, total, next_exp = analyze_tokens(content)
-    msg = f"📊 **Token Status**\n━━━━━━━━━━\n✅ Active: `{active}/{total}`"
+    msg = f"📊 **Token Status**\n✅ Active: `{active}/{total}`"
     if next_exp > 0:
         wait_m = int((next_exp-time.time())//60)
-        msg += f"\n⏳ Next Expiry in: `{wait_m}m`"
+        msg += f"\n⏳ Next Expiry: `{wait_m}m`"
     elif active == 0:
         msg += f"\n⚠️ **All Tokens Expired!**"
     await event.reply(msg)
@@ -118,10 +117,59 @@ async def auto_updater():
     global IS_PROCESSING, LAST_UPDATE_TIME
     while True:
         try:
-            # Step 1: GitHub se token check karo
             content, sha = get_github_content("token_ind.json")
             if content:
                 active, total, _ = analyze_tokens(content)
                 
-                # CONDITION: Jab tak 0 active token na ho, tab tak kuch mat karo
-                if active ==
+                # FIXED LINE 127: Ab active == 0 poora likha hai
+                if active == 0:
+                    current_time = datetime.now()
+                    time_passed = current_time - LAST_UPDATE_TIME
+                    
+                    if time_passed >= timedelta(hours=2):
+                        if not IS_PROCESSING:
+                            IS_PROCESSING = True
+                            async with client.conversation(TARGET_BOT) as conv:
+                                await conv.send_file("id.json")
+                                found_file = None
+                                for _ in range(5):
+                                    resp = await conv.get_response()
+                                    if resp.media:
+                                        found_file = await client.download_media(resp.media)
+                                        break
+                                    await asyncio.sleep(2)
+                                
+                                if found_file:
+                                    with open(found_file, 'r') as f: new_data = f.read()
+                                    for f_n in ["token_ind.json", "token_ind_visit.json"]:
+                                        _, c_sha = get_github_content(f_n)
+                                        update_github(f_n, new_data, c_sha)
+                                    
+                                    LAST_UPDATE_TIME = datetime.now()
+                                    await client.send_message(GROUP_ID, "✅ **Auto-Update Success!**")
+                                    if os.path.exists(found_file): os.remove(found_file)
+                                    await wait_for_render_deploy()
+                                else:
+                                    LAST_UPDATE_TIME = datetime.now()
+                                    print("⚠️ Khushi bot failed to respond.")
+                            IS_PROCESSING = False
+                    else:
+                        print(f"Waiting for 2h gap...")
+                else:
+                    print(f"Status: {active}/{total} tokens active.")
+            
+        except Exception as e:
+            print(f"Global Error: {e}")
+            IS_PROCESSING = False
+        await asyncio.sleep(300)
+
+async def start_bot_and_loop():
+    await client.start()
+    asyncio.create_task(auto_updater())
+    await client.run_until_disconnected()
+
+if __name__ == "__main__":
+    Thread(target=run_web, daemon=True).start()
+    asyncio.run(start_bot_and_loop())
+else:
+    Thread(target=lambda: asyncio.run(start_bot_and_loop()), daemon=True).start()
