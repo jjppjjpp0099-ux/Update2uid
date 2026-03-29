@@ -83,29 +83,27 @@ def analyze_tokens(content):
 # --- [ TELEGRAM CLIENT SETUP ] ---
 client = TelegramClient(StringSession(SESSION_STRING), API_ID, API_HASH)
 
-@client.on(events.NewMessage(pattern='/expire'))
+# UPDATED HANDLER: Isme 'incoming=True' aur 'func' add kiya hai taaki koi miss na ho
+@client.on(events.NewMessage(pattern='/expire', incoming=True))
 async def expire_report(event):
+    # Check if message is from your group
     if event.chat_id != GROUP_ID:
         return
     
+    print(f"DEBUG: /expire command detected in chat {event.chat_id}")
     content, _ = get_github_content("token_ind.json")
     if not content: 
-        return await event.reply("❌ Error: File nahi mili!")
+        return await event.reply("❌ Error: GitHub file nahi mili!")
     
     active, total, next_exp = analyze_tokens(content)
     msg = f"📊 **Token Status**\n━━━━━━━━━━\n✅ Active: `{active}/{total}`"
     
     if active > 0 and next_exp > 0:
-        # Seconds ko Hours aur Minutes me badalna
         remaining_sec = int(next_exp - time.time())
         hours, remainder = divmod(remaining_sec, 3600)
         minutes, _ = divmod(remainder, 60)
         
-        time_str = ""
-        if hours > 0:
-            time_str += f"{hours}h "
-        time_str += f"{minutes}m"
-        
+        time_str = f"{hours}h {minutes}m" if hours > 0 else f"{minutes}m"
         msg += f"\n⏳ Next Expiry in: `{time_str}`"
     elif active == 0:
         msg += f"\n⚠️ **All Tokens Expired!**"
@@ -120,7 +118,6 @@ async def auto_updater():
             content, sha = get_github_content("token_ind.json")
             if content:
                 active, total, _ = analyze_tokens(content)
-                
                 if active == 0:
                     current_time = datetime.now()
                     if (current_time - LAST_UPDATE_TIME) >= timedelta(hours=2):
@@ -143,23 +140,23 @@ async def auto_updater():
                                         update_github(f_n, new_data, c_sha)
                                     
                                     LAST_UPDATE_TIME = datetime.now()
-                                    await client.send_message(GROUP_ID, "✅ **Auto-Update Done!**\nTokens were 0, so refreshed.")
+                                    await client.send_message(GROUP_ID, "✅ **Auto-Update Success!**")
                                     if os.path.exists(found_file): os.remove(found_file)
                                 else:
                                     LAST_UPDATE_TIME = datetime.now()
                             IS_PROCESSING = False
-                    else:
-                        print("Tokens 0, but 2h gap active.")
                 else:
                     print(f"Monitoring: {active}/{total} active.")
             
         except Exception as e:
-            print(f"Error: {e}")
+            print(f"Loop Error: {e}")
             IS_PROCESSING = False
         await asyncio.sleep(300)
 
 async def main():
     await client.start()
+    print("Bot is LIVE and Listening...")
+    # Dono loops ko start karna zaroori hai
     await asyncio.gather(
         client.run_until_disconnected(),
         auto_updater()
