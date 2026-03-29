@@ -83,24 +83,30 @@ def analyze_tokens(content):
 # --- [ TELEGRAM CLIENT SETUP ] ---
 client = TelegramClient(StringSession(SESSION_STRING), API_ID, API_HASH)
 
-# Command Handler
 @client.on(events.NewMessage(pattern='/expire'))
 async def expire_report(event):
-    # Sirf specific group me chale
     if event.chat_id != GROUP_ID:
         return
     
-    print("Command /expire received!") # Debug log
     content, _ = get_github_content("token_ind.json")
     if not content: 
-        return await event.reply("❌ Error: Repo file `token_ind.json` nahi mili!")
+        return await event.reply("❌ Error: File nahi mili!")
     
     active, total, next_exp = analyze_tokens(content)
     msg = f"📊 **Token Status**\n━━━━━━━━━━\n✅ Active: `{active}/{total}`"
     
     if active > 0 and next_exp > 0:
-        wait_m = int((next_exp - time.time()) // 60)
-        msg += f"\n⏳ Next Expiry: `{wait_m}m`"
+        # Seconds ko Hours aur Minutes me badalna
+        remaining_sec = int(next_exp - time.time())
+        hours, remainder = divmod(remaining_sec, 3600)
+        minutes, _ = divmod(remainder, 60)
+        
+        time_str = ""
+        if hours > 0:
+            time_str += f"{hours}h "
+        time_str += f"{minutes}m"
+        
+        msg += f"\n⏳ Next Expiry in: `{time_str}`"
     elif active == 0:
         msg += f"\n⚠️ **All Tokens Expired!**"
     
@@ -115,7 +121,6 @@ async def auto_updater():
             if content:
                 active, total, _ = analyze_tokens(content)
                 
-                # Logic: Sirf 0 hone par trigger karega
                 if active == 0:
                     current_time = datetime.now()
                     if (current_time - LAST_UPDATE_TIME) >= timedelta(hours=2):
@@ -138,34 +143,28 @@ async def auto_updater():
                                         update_github(f_n, new_data, c_sha)
                                     
                                     LAST_UPDATE_TIME = datetime.now()
-                                    await client.send_message(GROUP_ID, "✅ **Auto-Update Success!**\nTokens 0 hone par refresh kar diye gaye hain.")
+                                    await client.send_message(GROUP_ID, "✅ **Auto-Update Done!**\nTokens were 0, so refreshed.")
                                     if os.path.exists(found_file): os.remove(found_file)
                                 else:
                                     LAST_UPDATE_TIME = datetime.now()
-                                    print("⚠️ Khushi bot no response.")
                             IS_PROCESSING = False
                     else:
-                        print("Tokens 0 hain, par 2h gap bacha hai.")
+                        print("Tokens 0, but 2h gap active.")
                 else:
-                    print(f"Monitoring: {active}/{total} tokens active.")
+                    print(f"Monitoring: {active}/{total} active.")
             
         except Exception as e:
-            print(f"Loop Error: {e}")
+            print(f"Error: {e}")
             IS_PROCESSING = False
         await asyncio.sleep(300)
 
-# --- [ MAIN EXECUTION ] ---
 async def main():
     await client.start()
-    print("Bot is Started...")
-    # Dono kaam ek saath chalenge
     await asyncio.gather(
         client.run_until_disconnected(),
         auto_updater()
     )
 
 if __name__ == "__main__":
-    # Flask ko alag thread me chalao
     Thread(target=run_web, daemon=True).start()
-    # Main Bot loop
     asyncio.run(main())
