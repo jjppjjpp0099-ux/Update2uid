@@ -75,9 +75,9 @@ def analyze_tokens(content):
 # --- [ USERBOT CLIENT ] ---
 client = TelegramClient(StringSession(SESSION_STRING), API_ID, API_HASH)
 
-# Userbot ke liye respond filter (No 'incoming=True' to allow self-commands)
 @client.on(events.NewMessage(pattern=r'(?i)^/expire'))
 async def expire_report(event):
+    # Userbot hamesha response dega agar group match hua
     if event.chat_id != GROUP_ID: return
     
     content, _ = get_github_content("token_ind.json")
@@ -128,16 +128,16 @@ async def auto_updater():
                                     await client.send_message(GROUP_ID, "✅ **Tokens Refreshed!**")
                                     if os.path.exists(f_file): os.remove(f_file)
                             IS_PROCESSING = False
-                else:
-                    print(f"Healthy: {active} tokens.")
         except: pass
         await asyncio.sleep(300)
 
 async def main():
     await client.start()
-    print("Userbot Live...")
+    print("Userbot Started Successfully!")
     await asyncio.gather(client.run_until_disconnected(), auto_updater())
 
 if __name__ == "__main__":
+    # Flask thread start karo
     Thread(target=run_web, daemon=True).start()
+    # Main Bot start karo
     asyncio.run(main())
